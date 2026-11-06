@@ -1,8 +1,10 @@
+import { ProcessAdmissionError } from "../../../src/process/ProcessAdmissionError.js";
+import { systemProcessOwnershipHost } from "../../../src/process/ProcessOwnershipObservation.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import { afterAll, expect, it, onTestFinished } from "vitest";
+import { afterAll, expect, it, onTestFinished, vi } from "vitest";
 
 import { AnalysisProviderRegistry } from "../../../src/application/binary/AnalysisProviderRegistry.js";
 import { composeBinarySession } from "../../../src/application/binary/BinarySessionComposition.js";
@@ -194,6 +196,65 @@ it("returns an unready IDA registration's repair from an explicit open_binary se
       },
     ],
   });
+});
+
+it("does not mark objdump unavailable after ownership baseline admission fails", async () => {
+  const { client, close } = await createApplicationMcpHarness({
+    serverOptions: {
+      environment: { REA_OBJDUMP_COMMAND: "/not-launched-objdump" },
+    },
+    clientIdentity: { name: "ownership-admission", version: "1" },
+    schemaValidator: schemaValidation,
+  });
+  const prepare = vi
+    .spyOn(systemProcessOwnershipHost, "prepare")
+    .mockResolvedValue();
+  const baseline = vi
+    .spyOn(systemProcessOwnershipHost, "captureBaseline")
+    .mockRejectedValue(
+      new ProcessAdmissionError("identity_snapshot_unavailable", {
+        live_processes: 1,
+      }),
+    );
+  try {
+    const failed = await client.callTool({
+      name: "inspect_with_objdump",
+      arguments: { operation: "architectures" },
+    });
+    expect(baseline).toHaveBeenCalledOnce();
+    expect(parseMcpToolError(failed).error).toMatchObject({
+      code: "execution_failure",
+      details: {
+        provider_id: "process-ownership",
+        diagnostics: {
+          boundary: "process-ownership",
+          admission_code: "identity_snapshot_unavailable",
+        },
+      },
+    });
+    baseline.mockRestore();
+    prepare.mockRestore();
+    const response = await client.callTool({
+      name: "binary_session",
+      arguments: { detail: "complete" },
+    });
+    expect(response.isError).not.toBe(true);
+    const status = toolContract("binary_session").outputSchema.parse(
+      response.structuredContent,
+    ).result;
+    const tool = expandToolAvailability(
+      toolAvailabilityInventory.parse(status.tool_availability),
+    ).find(({ name }) => name === "inspect_with_objdump");
+    expect(tool).toMatchObject({
+      available: true,
+      reason: "available",
+      remediation: null,
+    });
+  } finally {
+    baseline.mockRestore();
+    prepare.mockRestore();
+    await close();
+  }
 });
 
 it.skipIf(process.platform === "win32")(

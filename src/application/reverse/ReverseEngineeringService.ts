@@ -46,6 +46,7 @@ import {
   OwnedCommandFailure,
   runOwnedCommand,
 } from "../../process/OwnedCommand.js";
+import { ProcessAdmissionError } from "../../process/ProcessAdmissionError.js";
 import { LinuxOwnedProcessPrerequisiteError } from "../../process/ProcessOwnershipObservation.js";
 import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
 import { absoluteCallerPath } from "../../filesystem/callerPath.js";
@@ -573,6 +574,29 @@ export class ReverseEngineeringService {
           ? (execFileOutputFailure(cause.cause)?.code ??
             commandFailureCode(cause.cause))
           : undefined);
+      if (
+        earlyFailure === undefined &&
+        cause instanceof ProcessAdmissionError &&
+        !commandCancelled(signal, cause, code)
+      )
+        earlyFailure = new ProviderAdapterError(
+          "process-ownership",
+          operation,
+          {
+            cause,
+            userMessage: `Process ownership admission failed (${cause.code}).`,
+            remediationAction:
+              "Check host process inspection permissions and the ownership diagnostics before retrying. This failure does not establish that the configured executable is unavailable.",
+            diagnostics: {
+              boundary: "process-ownership",
+              admission_code: cause.code,
+              ...(cause.detail === undefined
+                ? {}
+                : { admission_detail: { ...cause.detail } }),
+            },
+            ...ownedCleanupOptions(cause),
+          },
+        );
       if (earlyFailure === undefined && code === "E2BIG")
         earlyFailure = new AnalysisResourceConstraintError(
           operation,

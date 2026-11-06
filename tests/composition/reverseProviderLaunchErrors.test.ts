@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { expect, it, vi } from "vitest";
+import { ProcessAdmissionError } from "../../src/process/ProcessAdmissionError.js";
 import { OwnedCommandFailure } from "../../src/process/OwnedCommand.js";
 import {
   LinuxOwnedProcessPrerequisiteError,
@@ -66,6 +67,77 @@ it.each(["ENOENT", "EACCES", "EPERM", "ENOTDIR"] as const)(
     }
   },
 );
+
+it.each(["objdump", "rizin"] as const)(
+  "preserves %s ownership-baseline rejection without recording an executable failure",
+  async (provider) => {
+    const { directory, path } = await createArtifact();
+    const failure = new ProcessAdmissionError("identity_snapshot_unavailable", {
+      live_processes: 1,
+    });
+    const prepare = vi
+      .spyOn(systemProcessOwnershipHost, "prepare")
+      .mockResolvedValue();
+    const baseline = vi
+      .spyOn(systemProcessOwnershipHost, "captureBaseline")
+      .mockRejectedValue(failure);
+    const service = new TestReverseEngineeringService({
+      environment: {
+        REA_OBJDUMP_COMMAND: resolve(directory, "not-launched-objdump"),
+        REA_RIZIN_COMMAND: resolve(directory, "not-launched-rizin"),
+      },
+    });
+    try {
+      const result =
+        provider === "objdump"
+          ? await service.inspectWithObjdump({ operation: "architectures" })
+          : await service.executeRizinCommand({ path, command: "iI" });
+      expect(baseline).toHaveBeenCalledOnce();
+      if (result.ok) throw new Error("Expected ownership admission refusal");
+      expect(service.observedLaunchFailures()).toEqual({});
+      expect(result.error.cause).toBe(failure);
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        code: "execution_failure",
+        details: {
+          provider_id: "process-ownership",
+          diagnostics: {
+            boundary: "process-ownership",
+            admission_code: "identity_snapshot_unavailable",
+            admission_detail: { live_processes: 1 },
+          },
+        },
+      });
+    } finally {
+      baseline.mockRestore();
+      prepare.mockRestore();
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it("keeps a caller's admission-shaped abort reason opaque", async () => {
+  const controller = new AbortController();
+  const reason = new ProcessAdmissionError("identity_snapshot_unavailable");
+  const service = new TestReverseEngineeringService({
+    runOwned: async () => {
+      controller.abort(reason);
+      throw reason;
+    },
+  });
+  try {
+    const result = await service.inspectWithObjdump(
+      { operation: "architectures" },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(projectAnalysisError(result.error).code).toBe("cancelled");
+    expect(result.error.cause).toBe(reason);
+    expect(service.observedLaunchFailures()).toEqual({});
+  } finally {
+    await service.close();
+  }
+});
 
 it.each(["EAGAIN", "EMFILE", "ENFILE", "ENOMEM"] as const)(
   "treats objdump host capacity spawn failure %s as retryable resource constraint without recording launch failure",
@@ -373,9 +445,12 @@ it("tracks observed launch failures and clears them after subsequent successful 
   const { directory, path } = await createArtifact();
   const command = resolve(directory, "failing-objdump");
   let failLaunch = true;
+  let rejectOwnership = false;
   const service = new TestReverseEngineeringService({
     environment: { REA_OBJDUMP_COMMAND: command },
     runOwned: async () => {
+      if (rejectOwnership)
+        throw new ProcessAdmissionError("identity_snapshot_unavailable");
       if (failLaunch) {
         throw new OwnedCommandFailure("process", "launch failed", null, null, {
           cause: Object.assign(new Error("missing executable"), {
@@ -399,6 +474,14 @@ it("tracks observed launch failures and clears them after subsequent successful 
       },
     });
 
+    const previousFailure = service.observedLaunchFailures();
+    rejectOwnership = true;
+    const refused = await service.inspectWithObjdump({
+      operation: "architectures",
+    });
+    expect(refused.ok).toBe(false);
+    expect(service.observedLaunchFailures()).toEqual(previousFailure);
+    rejectOwnership = false;
     failLaunch = false;
     const succeeded = await service.inspectWithObjdump({
       operation: "architectures",

@@ -698,7 +698,7 @@ export function* collectSemanticMemberMutationsSteps(
       return false;
     }
 
-    return steps > 0;
+    return steps > 0 && queue.length === 0;
   };
   const isPossibleArrayReceiver = (root: t.Node): boolean => {
     return !isProvenNonArrayReceiver(root);
@@ -719,7 +719,10 @@ export function* collectSemanticMemberMutationsSteps(
     while (queue.length > 0 && steps < 50) {
       steps++;
       const item = queue.shift()!;
-      if (item.depth > 5) continue;
+      if (item.depth > 5) {
+        found = true;
+        break;
+      }
       const unwrapped = unwrapJavaScriptExpression(item.node).node;
 
       if (
@@ -762,6 +765,9 @@ export function* collectSemanticMemberMutationsSteps(
         }
       }
     }
+    if (queue.length > 0) {
+      found = true;
+    }
 
     arrayIteratorCache.set(rootUnwrapped, found);
     return found;
@@ -782,7 +788,10 @@ export function* collectSemanticMemberMutationsSteps(
     while (queue.length > 0 && steps < 50) {
       steps++;
       const item = queue.shift()!;
-      if (item.depth > 5) continue;
+      if (item.depth > 5) {
+        found = true;
+        break;
+      }
       const unwrapped = unwrapJavaScriptExpression(item.node).node;
 
       if (
@@ -820,6 +829,9 @@ export function* collectSemanticMemberMutationsSteps(
           }
         }
       }
+    }
+    if (queue.length > 0) {
+      found = true;
     }
 
     arrayIteratorPrototypeCache.set(rootUnwrapped, found);

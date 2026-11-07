@@ -1131,3 +1131,21 @@ it("safely bounds alias cycles during array iterator prototype checks", () => {
   expect(ir.childProcessInteractions).toEqual([]);
   expect(ir.eventOperations).toEqual([]);
 });
+
+it("preserves uncertainty when array iterator prototype resolution reaches traversal depth bound", () => {
+  const ir = analyzeJavaScriptSemantics(`
+    import { spawn } from "node:child_process";
+    const i0 = [][Symbol.iterator]();
+    const i1 = i0;
+    const i2 = i1;
+    const i3 = i2;
+    const i4 = i3;
+    const i5 = i4;
+    const i6 = i5;
+    Object.getPrototypeOf(i6).next = customNext;
+    const child = spawn("worker");
+    child.on(...["exit", 0]);
+  `);
+  expect(ir.childProcessInteractions.length).toBeGreaterThan(0);
+  expect(ir.eventOperations.length).toBeGreaterThan(0);
+});

@@ -597,60 +597,111 @@ export function* collectSemanticMemberMutationsSteps(
     resolvedBindings.set(node, resolved ?? null);
     return resolved;
   };
-  const arrayReceiverCache = new WeakMap<t.Node, boolean>();
-  const isPossibleArrayReceiver = (root: t.Node): boolean => {
-    const rootUnwrapped = unwrapJavaScriptExpression(root).node;
-    const cached = arrayReceiverCache.get(rootUnwrapped);
-    if (cached !== undefined) return cached;
-
+  const provenNonArrayReceiverCache = new WeakMap<t.Node, boolean>();
+  const isProvenNonArrayReceiver = (root: t.Node): boolean => {
     const queue: Array<{ node: t.Node; depth: number }> = [
-      { node: rootUnwrapped, depth: 0 },
+      { node: root, depth: 0 },
     ];
     const visitedBindings = new Set<JavaScriptSemanticBindingState>();
     let steps = 0;
-    let found = false;
 
     while (queue.length > 0 && steps < 50) {
       steps++;
       const item = queue.shift()!;
-      if (item.depth > 5) continue;
+      if (item.depth > 5) return false;
       const unwrapped = unwrapJavaScriptExpression(item.node).node;
+      const cached = provenNonArrayReceiverCache.get(unwrapped);
+      if (cached !== undefined) {
+        if (!cached) return false;
+        continue;
+      }
 
-      if (t.isArrayExpression(unwrapped)) {
-        found = true;
-        break;
+      if (t.isObjectExpression(unwrapped)) {
+        provenNonArrayReceiverCache.set(unwrapped, true);
+        continue;
+      }
+      if (
+        t.isFunctionExpression(unwrapped) ||
+        t.isArrowFunctionExpression(unwrapped) ||
+        t.isClassExpression(unwrapped)
+      ) {
+        provenNonArrayReceiverCache.set(unwrapped, true);
+        continue;
+      }
+      if (
+        t.isStringLiteral(unwrapped) ||
+        t.isNumericLiteral(unwrapped) ||
+        t.isBooleanLiteral(unwrapped) ||
+        t.isNullLiteral(unwrapped)
+      ) {
+        provenNonArrayReceiverCache.set(unwrapped, true);
+        continue;
+      }
+      if (t.isNewExpression(unwrapped)) {
+        const callee = unwrapJavaScriptExpression(unwrapped.callee).node;
+        if (t.isIdentifier(callee, { name: "Array" })) {
+          provenNonArrayReceiverCache.set(unwrapped, false);
+          return false;
+        }
+        provenNonArrayReceiverCache.set(unwrapped, true);
+        continue;
       }
       if (
         t.isMemberExpression(unwrapped) &&
-        t.isIdentifier(unwrapped.object, { name: "Array" }) &&
         t.isIdentifier(unwrapped.property, { name: "prototype" })
       ) {
-        found = true;
-        break;
+        const obj = unwrapJavaScriptExpression(unwrapped.object).node;
+        if (t.isIdentifier(obj)) {
+          if (obj.name === "Array") {
+            provenNonArrayReceiverCache.set(unwrapped, false);
+            return false;
+          }
+          if (
+            [
+              "Map",
+              "Set",
+              "WeakMap",
+              "WeakSet",
+              "Object",
+              "Function",
+              "Date",
+              "RegExp",
+              "Promise",
+            ].includes(obj.name)
+          ) {
+            provenNonArrayReceiverCache.set(unwrapped, true);
+            continue;
+          }
+        }
       }
-      if (
-        t.isNewExpression(unwrapped) &&
-        t.isIdentifier(unwrapped.callee, { name: "Array" })
-      ) {
-        found = true;
-        break;
-      }
-      if (t.isNewExpression(unwrapped) || t.isObjectExpression(unwrapped)) {
-        continue;
+      if (t.isArrayExpression(unwrapped)) {
+        provenNonArrayReceiverCache.set(unwrapped, false);
+        return false;
       }
       if (t.isIdentifier(unwrapped)) {
         const binding = resolveBinding(unwrapped, unwrapped.name);
-        if (binding !== undefined && !visitedBindings.has(binding)) {
+        if (
+          binding !== undefined &&
+          binding.initializers.length > 0 &&
+          !visitedBindings.has(binding)
+        ) {
           visitedBindings.add(binding);
           for (const init of binding.initializers) {
             queue.push({ node: init.node, depth: item.depth + 1 });
           }
+          continue;
         }
+        provenNonArrayReceiverCache.set(unwrapped, false);
+        return false;
       }
+      provenNonArrayReceiverCache.set(unwrapped, false);
+      return false;
     }
 
-    arrayReceiverCache.set(rootUnwrapped, found);
-    return found;
+    return steps > 0;
+  };
+  const isPossibleArrayReceiver = (root: t.Node): boolean => {
+    return !isProvenNonArrayReceiver(root);
   };
   const arrayIteratorCache = new WeakMap<t.Node, boolean>();
   const isPossibleArrayIterator = (root: t.Node): boolean => {

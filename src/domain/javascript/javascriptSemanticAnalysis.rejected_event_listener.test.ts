@@ -1108,6 +1108,17 @@ it("retains valid callbacks when conditional test evaluates != with loose-equali
   );
 });
 
+it("retains candidate when %ArrayIteratorPrototype%.next is modified via Array.of()", () => {
+  const ir = analyzeJavaScriptSemantics(`
+    import { spawn } from "node:child_process";
+    Object.getPrototypeOf(Array.of().values()).next = customNext;
+    const child = spawn("worker");
+    child.on("exit", ...[1]);
+  `);
+  expect(ir.childProcessInteractions.length).toBeGreaterThan(0);
+  expect(ir.eventOperations.length).toBeGreaterThan(0);
+});
+
 it("safely bounds alias cycles during array iterator prototype checks", () => {
   const ir = analyzeJavaScriptSemantics(`
     import { spawn } from "node:child_process";
